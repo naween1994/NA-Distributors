@@ -1,3 +1,4 @@
+import { mongoRoutes } from './mongo/index.js';
 import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -14,6 +15,19 @@ import { adminRoutes } from './routes/admin.js';
 import { connectionRoutes } from './routes/connections.js';
 export function createApp(db) {
   const app = express();
+  const routes =
+    db.kind === 'mongodb'
+      ? mongoRoutes
+      : {
+          authentication,
+          authRoutes,
+          productRoutes,
+          customerRoutes,
+          orderRoutes,
+          analyticsRoutes,
+          adminRoutes,
+          connectionRoutes,
+        };
   app.disable('x-powered-by');
   // Set only behind the controlled reverse proxy; the deployment binds the API to loopback.
   if (process.env.TRUST_PROXY_HOPS === '1') app.set('trust proxy', 1);
@@ -69,19 +83,26 @@ export function createApp(db) {
       message: { error: 'Too many requests. Try again shortly.' },
     }),
   );
-  app.get('/api/health', (req, res) => {
-    db.prepare('SELECT 1').get();
-    res.json({ ok: true, database: 'sqlite', persistent: true });
+  app.get('/api/health', async (req, res) => {
+    try {
+      if (db.kind === 'mongodb') await db.ping();
+      else db.prepare('SELECT 1').get();
+      res.json({ ok: true, database: db.kind || 'sqlite', persistent: true });
+    } catch {
+      res
+        .status(503)
+        .json({ ok: false, database: db.kind || 'sqlite', error: 'Database is unavailable.' });
+    }
   });
-  app.use('/api', authentication(db));
-  app.use('/api/auth', authRoutes(db));
+  app.use('/api', routes.authentication(db));
+  app.use('/api/auth', routes.authRoutes(db));
   app.use('/api', requireAuth);
-  app.use('/api/products', productRoutes(db));
-  app.use('/api/customers', customerRoutes(db));
-  app.use('/api/orders', orderRoutes(db));
-  app.use('/api', analyticsRoutes(db));
-  app.use('/api', adminRoutes(db));
-  app.use('/api', connectionRoutes(db));
+  app.use('/api/products', routes.productRoutes(db));
+  app.use('/api/customers', routes.customerRoutes(db));
+  app.use('/api/orders', routes.orderRoutes(db));
+  app.use('/api', routes.analyticsRoutes(db));
+  app.use('/api', routes.adminRoutes(db));
+  app.use('/api', routes.connectionRoutes(db));
   app.use('/api', (req, res) => res.status(404).json({ error: 'API endpoint not found.' }));
   const frontend = fileURLToPath(new URL('../../frontend/dist/', import.meta.url));
   if (existsSync(frontend)) {
@@ -90,8 +111,30 @@ export function createApp(db) {
   }
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
+    if (db.kind === 'mongodb' && error.code === 11000) {
+      const field = Object.keys(error.keyPattern || {})[0];
+      return res.status(409).json({
+        error:
+          field === 'sku'
+            ? 'This SKU is already in use.'
+            : field === 'barcode'
+              ? 'This barcode is already assigned to another product.'
+              : field === 'username'
+                ? 'This username is already in use.'
+                : 'This change conflicts with an existing record.',
+      });
+    }
     if (
-      error.code?.startsWith('SQLITE_CONSTRAINT') ||
+      db.kind === 'mongodb' &&
+      ['MongoServerSelectionError', 'MongoNetworkError', 'MongoNotConnectedError'].includes(
+        error.name,
+      )
+    )
+      return res.status(503).json({
+        error: 'Database is unavailable. No changes have been saved to a fallback store.',
+      });
+    if (
+      String(error.code || '').startsWith('SQLITE_CONSTRAINT') ||
       String(error.message).includes('UNIQUE constraint failed')
     )
       return res.status(409).json({
@@ -105,7 +148,15 @@ export function createApp(db) {
       });
     if (error.type === 'entity.parse.failed')
       return res.status(400).json({ error: 'Invalid JSON request.' });
-    if (!error.status) console.error(error);
+    if (!error.status) {
+      if (db.kind === 'mongodb')
+        console.error(
+          'MongoDB request failed.',
+          error.name || 'Error',
+          typeof error.code === 'number' ? error.code : '',
+        );
+      else console.error(error);
+    }
     res.status(error.status || 500).json({
       error: error.status ? error.message : 'The server could not complete this request.',
     });

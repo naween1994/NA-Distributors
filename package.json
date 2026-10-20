@@ -12,7 +12,8 @@
     "start": "npm run start -w backend",
     "test": "npm run test -w backend",
     "check": "npm run check -w frontend",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:mongo": "npm run test:mongo -w backend"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

@@ -1,12 +1,12 @@
 # NA Distributors
 
-A responsive spice distribution application with a separate React/TypeScript frontend and modular Express API. Business data is written directly to a persistent SQLite database. There is no browser business-data store, demo catalog, or in-memory database fallback.
+A responsive spice distribution application with a separate React/TypeScript frontend and modular Express API. Business data is written directly through the API to MongoDB Atlas or a persistent SQLite database. There is no browser business-data store, demo catalog, or in-memory database fallback.
 
 ## Requirements and startup
 
 - Node.js **24+** (`.node-version` records the tested version).
 - npm 11+.
-- A persistent, writable disk for the backend database.
+- MongoDB Atlas (or a MongoDB replica set), or a persistent writable disk for local SQLite.
 
 From this repository:
 
@@ -86,7 +86,11 @@ Customer credit limits create an explicit warning during order entry; they do no
 backend/src/
   server.js              Process startup/shutdown
   app.js                 Express middleware and route registration
-  db.js                  Persistent schema, default configuration and transactions
+  db.js                  SQLite schema and shared defaults
+  config/database.js     Provider selection and secret loading
+  mongo/                 Native collections, transactions and MongoDB routes
+  order-calculations.js  Shared server pricing and discount calculations
+  report-calculations.js Shared financial report calculations
   auth.js                Password hashing, sessions, CSRF and permission checks
   lib.js                 Validation, money, CSV and response transforms
   routes/
@@ -118,7 +122,21 @@ Same-origin deployment is the recommended default. **Mobile workspace → Config
 - Use HTTPS and same-site domains so session cookies work. Arbitrary cross-site hosting is not supported by the default `SameSite=Lax` cookies.
 - The phone must be able to reach both the site and backend. A desktop's localhost URL is not reachable from a phone.
 
-SQLite is the supplied persistent backend. A MongoDB connector or bidirectional database synchronization is **not implemented**; no MongoDB credential is needed. Deploy a single API instance with its persistent volume. Multiple users share that instance; multiple server replicas need a separately designed shared-database deployment.
+### MongoDB and secrets
+
+MongoDB is a native backend with collections for users, sessions, products, customers, invoices, items, payments, stock movements, settings, notifications and audit history. Writes go to MongoDB before the API reports success. Stock, invoices and payments use MongoDB transactions, with concurrency protection against overselling, overpayment and duplicate order retries. An Atlas cluster or replica set is required; a standalone MongoDB server is rejected.
+
+Configure **exactly one** connection-secret source:
+
+- **Google Cloud (recommended):** set `MONGODB_URI_SECRET` to `projects/radiant-destiny-366613/secrets/na-distributors-mongodb-uri/versions/latest`. The backend fetches the URI at startup using Application Default Credentials from its runtime service account and verifies the Secret Manager response checksum. Grant `roles/secretmanager.secretAccessor` on this secret only.
+- **Mounted secret:** set `MONGODB_URI_FILE` to a readable secret-file path. The file must contain the exact URI, without a trailing newline.
+- **Platform secret binding:** inject `MONGODB_URI` through your deployment platform's native secrets feature. Do not paste it into shell command arguments or commit it in `.env` files.
+
+Set `DATABASE_PROVIDER=mongodb` and `MONGODB_DB_NAME=na_distributors`. A connection secret also selects MongoDB automatically when the provider is omitted. Production (`NODE_ENV=production`) requires verified TLS. Insecure certificate/hostname settings are rejected. Missing credentials, denied access or a failed connection stop startup; there is no SQLite or memory fallback. The health endpoint reports `database: "mongodb"` only after a successful database ping.
+
+Create an Atlas database user with `readWrite` access to `na_distributors`. Allow the Google Cloud VM's reserved external IP as a single `/32` entry in Atlas **Network Access**. Store the full Atlas connection URI only in Secret Manager. Keep the database name and secret resource reference as ordinary configuration. Rotate any password shared in chat, then restart the application to load the new secret version.
+
+Choosing MongoDB opens that database; it does not migrate or synchronize an existing SQLite file. Preserve any existing file and arrange a reviewed migration if it contains records you need. A fresh MongoDB database contains only the three named users and configuration defaults. Configure and test Atlas backups separately; VM snapshots do not back up Atlas.
 
 ## Access controls
 
@@ -136,15 +154,18 @@ Passwords are scrypt-hashed with per-password random salts. Sessions use random,
 
 ```sh
 npm run check       # TypeScript
-npm test            # API integration tests with isolated databases
+npm test            # SQLite API and secret/configuration tests with isolated databases
+npm run test:mongo  # Native MongoDB tests; requires MONGODB_TEST_URI for a test replica set
 npm run build       # Production frontend
 npm run test:e2e    # Browser workflow against an isolated production-style server
 ```
 
 Browser tests use system Chromium at `/usr/bin/chromium`; set `CHROMIUM_PATH` for another installation. If using Playwright's bundled Chromium, install it and set the executable path accordingly. The browser test requires a current frontend build and uses port 3011. Its temporary database is created under the OS temporary directory, separate from the application database.
 
+MongoDB tests create randomly named databases prefixed `na_test_` and drop only those databases on completion. `MONGODB_TEST_URI` must reference a disposable test cluster/replica set, never production. The MongoDB suite fails if this variable is absent. To exercise the same browser workflow on MongoDB, provide `MONGODB_TEST_URI` when running `npm run test:e2e`; its temporary `na_browser_test_` database is removed when the test server stops.
+
 Tests cover empty initialization, authentication, all six discount thresholds, atomic stock changes, idempotent order creation, payments, historical margins, role restrictions, exports, reminder drafts, persistence and a browser workflow at desktop and mobile widths. Physical camera capture, print hardware, provider delivery and signed Android packaging are not exercised by those tests.
 
 ## Google Cloud deployment
 
-A Google Cloud Shell installer for project `radiant-destiny-366613` is in [deploy/google-cloud/README.md](deploy/google-cloud/README.md). It uses a dedicated Compute Engine VM, persistent SQLite storage, HTTPS, a private first-visit setup code and daily disk snapshots. Cloud resources incur charges. The deployment must be run by an authenticated Google Cloud user; no service-account key should be shared in chat.
+A Google Cloud Shell installer for project `radiant-destiny-366613` is in [deploy/google-cloud/README.md](deploy/google-cloud/README.md). It uses a dedicated Compute Engine VM, MongoDB Atlas via Secret Manager (or optional SQLite storage), HTTPS, a private first-visit setup code and daily disk snapshots. Cloud resources incur charges. The deployment must be run by an authenticated Google Cloud user; no service-account key should be shared in chat.

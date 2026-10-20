@@ -1,5 +1,20 @@
 {
-  "name": "@na-distributors/backend", "version": "1.0.0", "private": true, "type": "module",
-  "scripts": {"dev": "node --watch src/server.js", "start": "node src/server.js", "test": "node --test test/*.test.js"},
-  "dependencies": {"express": "^5.1.0", "helmet": "^8.1.0", "cors": "^2.8.5", "express-rate-limit": "^8.1.0"}
+  "name": "@na-distributors/backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js",
+    "test:mongo": "node --test test/mongo/*.test.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "google-auth-library": "^10.9.1",
+    "helmet": "^8.1.0",
+    "mongodb": "^6.21.0"
+  }
 }

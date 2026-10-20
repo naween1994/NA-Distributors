@@ -325,8 +325,8 @@ export default function Settings() {
               <Database size={24} />
               <h3>Every change has a home.</h3>
               <p>
-                Records are saved directly to the Express API and persistent SQLite database.
-                Browser storage holds connection preferences only.
+                Records are saved directly to the Express API and persistent database. Browser
+                storage holds connection preferences only.
               </p>
               <span className="badge healthy">
                 <span className="badge-dot" />

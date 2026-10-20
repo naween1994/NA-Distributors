@@ -100,7 +100,14 @@ export function customerDto(row) {
     : null;
 }
 export function orderDto(row, user) {
-  const result = { ...row, customer: JSON.parse(row.customer_snapshot), paid: row.paid || 0 };
+  const result = {
+    ...row,
+    customer:
+      typeof row.customer_snapshot === 'string'
+        ? JSON.parse(row.customer_snapshot)
+        : row.customer_snapshot,
+    paid: row.paid || 0,
+  };
   delete result.customer_snapshot;
   for (const key of ['subtotal', 'discount_amount', 'total', 'paid']) result[key] /= 100;
   result.balance = Math.round((result.total - result.paid) * 100) / 100;

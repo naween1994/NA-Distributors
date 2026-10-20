@@ -6,6 +6,16 @@ metadata() { curl --fail --silent --show-error --retry 5 -H 'Metadata-Flavor: Go
 image=$(metadata na-image)
 domain=$(metadata na-domain)
 registry=$(metadata na-registry)
+# Missing provider metadata preserves existing SQLite deployments during code-only updates.
+provider=$(metadata na-database 2>/dev/null || true)
+provider=${provider:-sqlite}
+[[ "$provider" == sqlite || "$provider" == mongodb ]] || { echo 'Invalid database provider metadata.' >&2; exit 1; }
+if [[ "$provider" == mongodb ]]; then
+  mongodb_secret=$(metadata na-mongodb-secret)
+  mongodb_db=$(metadata na-mongodb-db)
+  [[ "$mongodb_secret" =~ ^projects/[a-z0-9-]+/secrets/[a-zA-Z0-9_-]+/versions/(latest|[1-9][0-9]*)$ ]] || { echo 'Invalid MongoDB secret reference.' >&2; exit 1; }
+  [[ "$mongodb_db" =~ ^[a-zA-Z0-9_-]{1,63}$ ]] || { echo 'Invalid MongoDB database name.' >&2; exit 1; }
+fi
 [[ "$image" =~ ^[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/na-distributors/app@sha256:[a-f0-9]{64}$ ]] || { echo 'Invalid deployment image metadata.' >&2; exit 1; }
 [[ "$domain" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$ ]] || { echo 'Invalid application domain metadata.' >&2; exit 1; }
 [[ "$registry" =~ ^[a-z0-9-]+-docker\.pkg\.dev$ ]] || exit 1
@@ -25,7 +35,13 @@ chmod 600 /etc/na-distributors/setup-code
   echo 'NODE_ENV=production'
   echo 'PORT=3001'
   echo 'HOST=127.0.0.1'
-  echo 'DATABASE_PATH=/data/na-distributors.sqlite'
+  printf 'DATABASE_PROVIDER=%s\n' "$provider"
+  if [[ "$provider" == mongodb ]]; then
+    # Only references are stored here. Node retrieves the URI through VM service-account ADC.
+    printf 'MONGODB_URI_SECRET=%s\nMONGODB_DB_NAME=%s\n' "$mongodb_secret" "$mongodb_db"
+  else
+    echo 'DATABASE_PATH=/data/na-distributors.sqlite'
+  fi
   echo 'COOKIE_SECURE=true'
   echo 'TRUST_PROXY_HOPS=1'
   printf 'CORS_ORIGINS=https://%s\n' "$domain"
@@ -80,10 +96,10 @@ UNIT
 systemctl daemon-reload
 systemctl enable na-distributors.service na-distributors-https.service
 systemctl restart na-distributors.service
+systemctl restart na-distributors-https.service
 for attempt in $(seq 1 30); do
   if curl --fail --silent http://127.0.0.1:3001/api/health >/dev/null; then break; fi
-  if [[ "$attempt" -eq 30 ]]; then echo 'API did not become healthy; inspect journalctl -u na-distributors.' >&2; exit 1; fi
+  if [[ "$attempt" -eq 30 ]]; then echo 'API is not healthy yet. Check Secret Manager access and Atlas IP access; the service continues retrying. Inspect journalctl -u na-distributors.' >&2; exit 1; fi
   sleep 2
 done
-systemctl restart na-distributors-https.service
 printf 'Application started. HTTPS certificate provisioning for %s may take a few minutes.\n' "$domain"

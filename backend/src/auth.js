@@ -28,7 +28,9 @@ export function publicUser(user) {
     username: user.username,
     role: user.role,
     permissions: user.permissions
-      ? JSON.parse(user.permissions)
+      ? Array.isArray(user.permissions)
+        ? user.permissions
+        : JSON.parse(user.permissions)
       : ROLE_PERMISSIONS[user.role] || [],
     active: !!user.active,
     passwordSet: !!user.password_hash,

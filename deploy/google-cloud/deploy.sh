@@ -7,17 +7,26 @@ region=asia-south1
 zone=asia-south1-a
 domain=''
 plan=false
+provider=mongodb
+secret=na-distributors-mongodb-uri
+mongodb_db=na_distributors
 while (($#)); do
   case "$1" in
     --domain) domain=${2:?Provide a domain}; shift 2 ;;
     --plan) plan=true; shift ;;
-    *) echo "Usage: bash deploy/google-cloud/deploy.sh PROJECT_ID [--domain app.example.com] [--plan]" >&2; exit 2 ;;
+    --sqlite) provider=sqlite; shift ;;
+    --mongodb-secret) secret=${2:?Provide a secret name}; shift 2 ;;
+    --mongodb-database) mongodb_db=${2:?Provide a database name}; shift 2 ;;
+    *) echo "Usage: bash deploy/google-cloud/deploy.sh PROJECT_ID [--domain app.example.com] [--mongodb-secret SECRET_NAME] [--mongodb-database DATABASE] [--sqlite] [--plan]" >&2; exit 2 ;;
   esac
 done
 [[ "$project" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || { echo 'Invalid Google Cloud project ID.' >&2; exit 2; }
 if [[ -n "$domain" ]]; then
   [[ "$domain" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$ ]] || { echo 'Provide a lowercase hostname without scheme, port or path.' >&2; exit 2; }
 fi
+[[ "$secret" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid secret name.' >&2; exit 2; }
+[[ "$mongodb_db" =~ ^[a-zA-Z0-9_-]{1,63}$ ]] || { echo 'Invalid MongoDB database name.' >&2; exit 2; }
+secret_resource="projects/$project/secrets/$secret/versions/latest"
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 managed='Managed by NA Distributors deployment'
 vm=na-distributors
@@ -29,6 +38,7 @@ account="na-distributors-runtime@${project}.iam.gserviceaccount.com"
 registry="${region}-docker.pkg.dev"
 if [[ "$plan" == true ]]; then
   printf 'Project: %s\nRegion: %s\nVM: %s (e2-small, 2 GB RAM)\nStorage: 20 GB persistent boot disk, retained if VM is deleted\nHTTPS domain: %s\nDaily snapshots: retained for 7 days\n' "$project" "$region" "$vm" "${domain:-generated from reserved IP using sslip.io}"
+  printf 'Database: %s\nMongoDB secret reference: %s\n' "$provider" "$secret_resource"
   echo 'Creates billable Compute Engine, persistent disk, external IP, snapshot and Artifact Registry resources. No resources changed in plan mode.'
   exit 0
 fi
@@ -38,10 +48,14 @@ gcloud projects describe "$project" --format='value(projectId)' >/dev/null
 billing=$(gcloud billing projects describe "$project" --format='value(billingEnabled)')
 [[ "$billing" == True || "$billing" == true ]] || { echo 'Link an active billing account to this project before deploying.' >&2; exit 1; }
 trap 'echo "Deployment stopped. Any resources already created remain and may incur charges; see the cleanup instructions." >&2' ERR
-gcloud services enable compute.googleapis.com artifactregistry.googleapis.com iam.googleapis.com iap.googleapis.com oslogin.googleapis.com --project="$project" --quiet
+gcloud services enable compute.googleapis.com artifactregistry.googleapis.com iam.googleapis.com iap.googleapis.com oslogin.googleapis.com secretmanager.googleapis.com --project="$project" --quiet
 if [[ -n "$(gcloud compute instances list --project="$project" --zones="$zone" --filter="name=$vm" --format='value(name)')" ]]; then
   echo 'The na-distributors VM already exists. Stop here to preserve it. See the redeployment instructions; this installer is for the first deployment.' >&2
   exit 1
+fi
+if [[ "$provider" == mongodb ]]; then
+  gcloud secrets describe "$secret" --project="$project" --format='value(name)' >/dev/null
+  [[ "$(gcloud secrets versions describe latest --secret="$secret" --project="$project" --format='value(state)')" == ENABLED ]] || { echo 'Add an enabled MongoDB URI version in Secret Manager before deployment.' >&2; exit 1; }
 fi
 # Existing infrastructure is reused only if it carries this installer's description.
 ensure_owned() {
@@ -62,11 +76,14 @@ docker push "$image"
 image_digest=$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')
 [[ "$image_digest" == "${registry}/${project}/${repository}/app@sha256:"* ]] || { echo 'Could not verify the pushed image digest.' >&2; exit 1; }
 if [[ -z "$(gcloud iam service-accounts list --project="$project" --filter="email=$account" --format='value(email)')" ]]; then
-  gcloud iam service-accounts create na-distributors-runtime --display-name='NA Distributors image reader' --description="$managed" --project="$project" --quiet
+  gcloud iam service-accounts create na-distributors-runtime --display-name='NA Distributors runtime' --description="$managed" --project="$project" --quiet
 else
   ensure_owned "$(gcloud iam service-accounts describe "$account" --project="$project" --format='value(description)')"
 fi
 gcloud artifacts repositories add-iam-policy-binding "$repository" --location="$region" --member="serviceAccount:$account" --role=roles/artifactregistry.reader --project="$project" --quiet >/dev/null
+if [[ "$provider" == mongodb ]]; then
+  gcloud secrets add-iam-policy-binding "$secret" --member="serviceAccount:$account" --role=roles/secretmanager.secretAccessor --project="$project" --quiet >/dev/null
+fi
 if [[ -z "$(gcloud compute networks list --project="$project" --filter="name=$network" --format='value(name)')" ]]; then
   gcloud compute networks create "$network" --subnet-mode=custom --description="$managed" --project="$project" --quiet
 else
@@ -94,11 +111,14 @@ fi
 ip=$(gcloud compute addresses describe "$address" --region="$region" --project="$project" --format='value(address)')
 if [[ -z "$domain" ]]; then domain="na-distributors.${ip}.sslip.io"; fi
 printf '\nReserved IP: %s\nApplication domain: %s\n' "$ip" "$domain"
+if [[ "$provider" == mongodb ]]; then
+  printf '\nIn MongoDB Atlas, allow this VM address in Network Access: %s/32\nThe API will retry until Atlas allows it. Do not allow all Internet addresses.\n' "$ip"
+fi
 if [[ "$domain" != "na-distributors.${ip}.sslip.io" ]]; then
   echo "Create an A record for $domain pointing to $ip. HTTPS will become available after DNS propagates."
 fi
-gcloud compute instances create "$vm" --project="$project" --zone="$zone" --machine-type=e2-small --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=20GB --boot-disk-type=pd-balanced --no-boot-disk-auto-delete --network="$network" --subnet="$subnet" --address="$ip" --tags=na-distributors-web --service-account="$account" --scopes=https://www.googleapis.com/auth/cloud-platform --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring --labels=app=na-distributors --metadata="enable-oslogin=TRUE,na-image=$image_digest,na-domain=$domain,na-registry=$registry" --metadata-from-file="startup-script=$root/deploy/google-cloud/vm-startup.sh" --quiet
-# Snapshots capture the whole persistent disk, including SQLite WAL and related files.
+gcloud compute instances create "$vm" --project="$project" --zone="$zone" --machine-type=e2-small --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=20GB --boot-disk-type=pd-balanced --no-boot-disk-auto-delete --network="$network" --subnet="$subnet" --address="$ip" --tags=na-distributors-web --service-account="$account" --scopes=https://www.googleapis.com/auth/cloud-platform --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring --labels=app=na-distributors --metadata="enable-oslogin=TRUE,na-image=$image_digest,na-domain=$domain,na-registry=$registry,na-database=$provider,na-mongodb-secret=$secret_resource,na-mongodb-db=$mongodb_db" --metadata-from-file="startup-script=$root/deploy/google-cloud/vm-startup.sh" --quiet
+# Snapshots cover the VM disk only. Configure Atlas backups separately for MongoDB.
 policy=na-distributors-daily
 if [[ -z "$(gcloud compute resource-policies list --project="$project" --filter="name=$policy AND region:/$region" --format='value(name)')" ]]; then
   gcloud compute resource-policies create snapshot-schedule "$policy" --description="$managed" --region="$region" --daily-schedule --start-time=21:00 --max-retention-days=7 --on-source-disk-delete=keep-auto-snapshots --project="$project" --quiet
