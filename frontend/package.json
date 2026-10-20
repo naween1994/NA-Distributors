@@ -1,0 +1,6 @@
+{
+  "name": "@na-distributors/frontend", "version": "1.0.0", "private": true, "type": "module",
+  "scripts": {"dev": "vite --host 0.0.0.0", "build": "tsc -b && vite build", "check": "tsc -b --pretty false", "preview": "vite preview --host 0.0.0.0"},
+  "dependencies": {"react": "^19.1.1", "react-dom": "^19.1.1", "react-router-dom": "^7.9.3", "lucide-react": "^0.468.0", "qrcode": "^1.5.4", "jsbarcode": "^3.12.1", "@zxing/browser": "^0.1.5", "jspdf": "^3.0.3", "jspdf-autotable": "^5.0.2"},
+  "devDependencies": {"@types/react": "^19.1.16", "@types/react-dom": "^19.1.9", "@types/qrcode": "^1.5.5", "@types/jsbarcode": "^3.11.4", "typescript": "~5.9.3", "vite": "^7.1.9", "@vitejs/plugin-react": "^5.0.4"}
+}

@@ -1,0 +1,16 @@
+node_modules/
+frontend/dist/
+backend/data/
+*.log
+.env
+.env.local
+*.tsbuildinfo
+.playwright/
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm

@@ -1,0 +1,14 @@
+.git
+**/node_modules
+frontend/dist
+backend/data
+**/.env*
+**/*.sqlite*
+**/*.log
+**/*.tsbuildinfo
+.playwright
+e2e
+backend/test
+deploy
+*.tar.gz
+*.zip
